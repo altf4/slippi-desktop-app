@@ -147,9 +147,8 @@ export default class ConsoleConnection {
     // }
 
     this.connectToSpectate();
-    // TODO Turn these back on. But it was causing issues
-    // this.connectOnPort(Ports.WII_DEFAULT);
-    // this.connectOnPort(Ports.WII_LEGACY);
+    this.connectOnPort(Ports.WII_DEFAULT);
+    this.connectOnPort(Ports.WII_LEGACY);
   }
 
   connectToSpectate() {
@@ -202,12 +201,21 @@ export default class ConsoleConnection {
 
       const message = JSON.parse(packet.data().toString('ascii'));
       if(message["type"] === "connect_reply") {
+        this.connectionStatus = ConnectionStatus.CONNECTED;
+        this.connectionsByPort.forEach((connection) => {
+          // Prevent reconnections and disconnect
+          connection.reconnect = false; // eslint-disable-line
+          connection.disconnect();
+        });
+        this.clientsByPort.forEach((client) => {
+          // Probably not necessary since clients are created only after succesful connection
+          client.destroy();
+        });
 
         this.connDetails.clientToken = 0;
         this.connDetails.gameDataCursor = message["cursor"];
         this.connDetails.consoleNick = message["nick"];
         this.connDetails.version = message["version"];
-        this.connectionStatus = ConnectionStatus.CONNECTED;
 
         this.forceConsoleUiUpdate();
         this.slpFileWriter.updateSettings(this.getSettings());
@@ -234,8 +242,10 @@ export default class ConsoleConnection {
     this.peer.on("disconnect", (_data) => {
       this.client.destroy();
 
-      this.connectionStatus = ConnectionStatus.DISCONNECTED;
-      this.forceConsoleUiUpdate();
+      if (this.connectionStatus === ConnectionStatus.CONNECTING) {
+        this.connectionStatus = ConnectionStatus.DISCONNECTED;
+        this.forceConsoleUiUpdate();
+      }
     });
 
   }
@@ -256,13 +266,25 @@ export default class ConsoleConnection {
       strategy: 'fibonacci',
       failAfter: Infinity,
     }, (client) => {
+      if(this.connectionStatus !== ConnectionStatus.CONNECTING){
+        return;
+      }
+      this.connectionStatus = ConnectionStatus.CONNECTED;
+      this.connectionsByPort.forEach((iConn, iPort) => {
+        if (iPort === port) {
+          return;
+        }
+        iConn.reconnect = false; // eslint-disable-line
+        iConn.disconnect();
+      });
+      this.client.destroy()
+
       this.clientsByPort[port] = client;
 
       // Prepare console communication obj for talking UBJSON
       const consoleComms = new ConsoleCommunication();
 
       console.log(`Connected to ${this.ipAddress}:${port}!`);
-      this.connectionStatus = ConnectionStatus.CONNECTED;
 
       let commState = "initial";
       client.on('data', (data) => {
@@ -388,6 +410,9 @@ export default class ConsoleConnection {
 
     // A disconnect event will fire on the peer when this completes
     this.peer.disconnect();
+
+    this.connectionStatus = ConnectionStatus.DISCONNECTED;
+    this.forceConsoleUiUpdate();
   }
 
   getInitialCommState(data) {
